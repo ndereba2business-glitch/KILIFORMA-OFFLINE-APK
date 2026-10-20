@@ -1,0 +1,50 @@
+{
+  "packageId": "com.kiliforma.app",
+  "host": "kiliforma.com",
+  "name": "Kiliforma",
+  "launcherName": "Kiliforma",
+  "display": "standalone",
+  "orientation": "default",
+  "themeColor": "#14532D",
+  "themeColorDark": "#0F1512",
+  "navigationColor": "#14532D",
+  "navigationColorDark": "#0F1512",
+  "navigationDividerColor": "#14532D",
+  "navigationDividerColorDark": "#0F1512",
+  "backgroundColor": "#F7F8F5",
+  "startUrl": "/",
+  "fullScopeUrl": "https://kiliforma.com/",
+  "webManifestUrl": "https://kiliforma.com/manifest.webmanifest",
+  "iconUrl": "https://kiliforma.com/icons/icon-512.png",
+  "maskableIconUrl": "https://kiliforma.com/icons/icon-maskable-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "enableNotifications": false,
+  "enableSiteSettingsShortcut": true,
+  "fallbackType": "customtabs",
+  "features": {
+    "locationDelegation": {
+      "enabled": false
+    },
+    "playBilling": {
+      "enabled": false
+    }
+  },
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "minSdkVersion": 24,
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "appVersion": "1.0.0",
+  "signingKey": {
+    "path": "./android.keystore",
+    "alias": "kiliforma-upload"
+  },
+  "shortcuts": [],
+  "fingerprints": [],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": [],
+  "generatorApp": "bubblewrap-cli"
+}

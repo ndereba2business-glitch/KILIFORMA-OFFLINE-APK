@@ -1,0 +1,16 @@
+{
+  "name": "kiliforma-mobile",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Native Android shell for Kiliforma (Capacitor). The web app is built from ../ and copied in, so there is only one codebase.",
+  "scripts": {
+    "sync": "cap sync android",
+    "open": "cap open android",
+    "build:apk": "bash ./build-apk.sh"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/cli": "^8.5.3",
+    "@capacitor/core": "^8.5.3"
+  }
+}

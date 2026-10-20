@@ -1,0 +1,490 @@
+import { useEffect, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
+import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
+import { Stethoscope, CheckCircle2, Clock, XCircle, Ban, Save, CalendarOff, Trash2, Plus, AlertTriangle
+} from "lucide-react";
+
+const KENYA_COUNTIES = [
+  "Nairobi", "Mombasa", "Kisumu", "Nakuru", "Eldoret", "Thika",
+  "Kiambu", "Machakos", "Meru", "Nyeri", "Kakamega", "Kisii",
+  "Embu", "Garissa"
+];
+
+const SPECIALIZATION_OPTIONS = [
+  "Disease Diagnosis", "Vaccination", "Nutrition",
+  "Egg Production", "Chick Mortality", "Broiler Growth", "Layers"
+];
+
+const STATUS_META = {
+  unverified: { bg: "var(--fc-bg-gray100)", color: "var(--fc-fg-gray500)", icon: Clock, label: "Not submitted yet — fill out your profile below" },
+  missing: { bg: "var(--fc-bg-gray100)", color: "var(--fc-fg-gray500)", icon: Clock, label: "Not submitted yet — fill out your profile below" },
+  pending: { bg: "var(--fc-bg-amber100)", color: "var(--fc-fg-amber600)", icon: Clock, label: "Pending review — an admin will review your profile soon" },
+  verified: { bg: "var(--fc-bg-green100)", color: "var(--fc-fg-green700)", icon: CheckCircle2, label: "Verified — farmers can find and book you" },
+  rejected: { bg: "var(--fc-bg-red100)", color: "var(--fc-fg-red500)", icon: XCircle, label: "Rejected — update your details and resubmit" },
+  suspended: { bg: "var(--fc-bg-red100)", color: "var(--fc-fg-red800)", icon: Ban, label: "Suspended — contact support to appeal" },
+};
+
+const inputStyle = {
+  width: "100%", padding: "11px 14px", borderRadius: "12px",
+  border: "1.5px solid var(--fc-line-gray200)", fontSize: "14px",
+  outline: "none", boxSizing: "border-box", background: "var(--fc-bg-gray0)", color: "var(--fc-fg-gray900)"
+};
+
+const labelStyle = {
+  display: "block", fontSize: "13px", fontWeight: "600",
+  color: "var(--fc-fg-gray700)", marginBottom: "6px"
+};
+
+const EMPTY_FORM = {
+  full_name: "", bio: "", service_counties: [], specializations: [],
+  accepts_emergency: false, base_fee: "", license_number: "",
+  working_days: [1, 2, 3, 4, 5], available_start_time: "08:00", available_end_time: "17:00"
+};
+
+const WEEKDAYS = [
+  { value: 1, label: "Mon" }, { value: 2, label: "Tue" }, { value: 3, label: "Wed" },
+  { value: 4, label: "Thu" }, { value: 5, label: "Fri" }, { value: 6, label: "Sat" },
+  { value: 0, label: "Sun" },
+];
+
+export default function VetProfileSetup() {
+  const { user, profile, userEmail } = useAuth();
+  const toast = useToast();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [currentStatus, setCurrentStatus] = useState(null); // null = not loaded yet
+  const [form, setForm] = useState(EMPTY_FORM);
+
+  // ── AVAILABILITY: blocked dates (Phase 4.2) ──
+  const [blockedDates, setBlockedDates] = useState([]);
+  const [newBlockedDate, setNewBlockedDate] = useState("");
+  const [blockedDateError, setBlockedDateError] = useState("");
+
+  useEffect(() => {
+    async function loadProfile() {
+      if (!user?.id) return;
+      setLoading(true);
+      const { data, error: fetchError } = await supabase
+        .from("vet_profiles")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
+
+      if (fetchError) {
+        console.error("VetProfileSetup: failed to load profile —", fetchError.message);
+        setLoading(false);
+        return;
+      }
+
+      if (data) {
+        setCurrentStatus(data.verification_status);
+        setForm({
+          full_name: data.full_name || "",
+          bio: data.bio || "",
+          service_counties: data.service_counties || [],
+          specializations: data.specializations || [],
+          accepts_emergency: !!data.accepts_emergency,
+          base_fee: data.base_fee != null ? String(data.base_fee) : "",
+          license_number: data.license_number || "",
+          working_days: data.working_days || [1, 2, 3, 4, 5],
+          available_start_time: data.available_start_time || "08:00",
+          available_end_time: data.available_end_time || "17:00"
+        });
+      } else {
+        setCurrentStatus("missing");
+        setForm(f => ({ ...f, full_name: profile?.full_name || "" }));
+      }
+      setLoading(false);
+    }
+    loadProfile();
+  }, [user?.id]);
+
+  useEffect(() => {
+    async function loadBlockedDates() {
+      if (!user?.id) return;
+      const { data, error } = await supabase
+        .from("vet_blocked_dates")
+        .select("*")
+        .eq("vet_id", user.id)
+        .order("blocked_date", { ascending: true });
+      if (error) {
+        console.error("VetProfileSetup: failed to load blocked dates —", error.message);
+        return;
+      }
+      setBlockedDates(data || []);
+    }
+    loadBlockedDates();
+  }, [user?.id]);
+
+  async function addBlockedDate() {
+    setBlockedDateError("");
+    if (!newBlockedDate) return;
+    if (!user?.id) return;
+    const { data, error } = await supabase
+      .from("vet_blocked_dates")
+      .insert([{ vet_id: user.id, blocked_date: newBlockedDate }])
+      .select();
+    if (error) {
+      setBlockedDateError(
+        error.code === "23505" ? "That date is already blocked." : "Failed to block date: " + error.message
+      );
+      return;
+    }
+    setBlockedDates(d => [...d, ...data].sort((a, b) => a.blocked_date.localeCompare(b.blocked_date)));
+    setNewBlockedDate("");
+  }
+
+  async function removeBlockedDate(id) {
+    const { error } = await supabase.from("vet_blocked_dates").delete().eq("id", id);
+    if (error) { toast.error("Failed to remove blocked date: " + error.message); return; }
+    setBlockedDates(d => d.filter(bd => bd.id !== id));
+  }
+
+  function toggleArrayValue(field, value) {
+    setForm(f => {
+      const list = f[field].includes(value)
+        ? f[field].filter(v => v !== value)
+        : [...f[field], value];
+      return { ...f, [field]: list };
+    });
+  }
+
+  async function handleSave(e) {
+    e.preventDefault();
+    setError("");
+
+    if (!form.full_name.trim()) {
+      setError("Full name is required.");
+      return;
+    }
+    if (!user?.id) {
+      setError("You must be logged in.");
+      return;
+    }
+
+    // A suspended vet can't self-reactivate by editing their profile.
+    // Rejected/unverified re-enters the pending review queue on resubmit.
+    // Already verified or already pending simply keeps its current state.
+    let nextStatus = "pending";
+    if (currentStatus === "suspended") nextStatus = "suspended";
+    else if (currentStatus === "verified" || currentStatus === "pending") nextStatus = currentStatus;
+
+    setSaving(true);
+
+    const { error: upsertError } = await supabase
+      .from("vet_profiles")
+      .upsert({
+        user_id: user.id,
+        email: userEmail || null,
+        full_name: form.full_name.trim(),
+        bio: form.bio.trim() || null,
+        service_counties: form.service_counties,
+        specializations: form.specializations,
+        accepts_emergency: form.accepts_emergency,
+        base_fee: form.base_fee ? Number(form.base_fee) : null,
+        license_number: form.license_number.trim() || null,
+        working_days: form.working_days,
+        available_start_time: form.available_start_time,
+        available_end_time: form.available_end_time,
+        verification_status: nextStatus,
+        updated_at: new Date().toISOString()
+      }, { onConflict: "user_id" });
+
+    setSaving(false);
+
+    if (upsertError) {
+      setError("Failed to save profile: " + upsertError.message);
+      return;
+    }
+
+    setCurrentStatus(nextStatus);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 3000);
+  }
+
+  const statusMeta = STATUS_META[currentStatus] || STATUS_META.missing;
+  const StatusIcon = statusMeta.icon;
+
+  if (loading) {
+    return <p style={{ color: "var(--fc-fg-gray400)", fontSize: "14px" }}>Loading your profile...</p>;
+  }
+
+  return (
+    <div style={{ maxWidth: "680px" }}>
+      {/* HEADER */}
+      <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "8px" }}>
+        <Stethoscope size={28} color="var(--fc-fg-green700)" />
+        <h1 style={{ margin: 0, fontSize: "32px", fontWeight: "700", color: "var(--fc-fg-gray900)", letterSpacing: "-1px" }}>
+          My Vet Profile
+        </h1>
+      </div>
+      <p style={{ color: "var(--fc-fg-gray500)", fontSize: "14px", marginBottom: "20px" }}>
+        This information is shown to farmers when they choose a vet to book.
+      </p>
+
+      {/* STATUS BANNER */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: "10px",
+        padding: "14px 16px", borderRadius: "12px",
+        background: statusMeta.bg, marginBottom: "24px"
+      }}>
+        <StatusIcon size={18} color={statusMeta.color} />
+        <span style={{ fontSize: "13px", fontWeight: "600", color: statusMeta.color }}>
+          {statusMeta.label}
+        </span>
+      </div>
+
+      <form onSubmit={handleSave} style={{
+        background: "var(--fc-bg-gray0)", borderRadius: "16px", border: "1px solid var(--fc-line-gray200)",
+        padding: "28px", boxShadow: "var(--fc-shadow-card)"
+      }}>
+        {/* FULL NAME */}
+        <div style={{ marginBottom: "18px" }}>
+          <label style={labelStyle}>Full Name</label>
+          <input aria-label="Full Name"
+            placeholder="Dr. Jane Wanjiru"
+            value={form.full_name}
+            onChange={e => setForm({ ...form, full_name: e.target.value })}
+            required
+            style={inputStyle}
+          />
+        </div>
+
+        {/* BIO */}
+        <div style={{ marginBottom: "18px" }}>
+          <label style={labelStyle}>Bio (optional)</label>
+          <textarea aria-label="Bio"
+            placeholder="A short introduction — experience, focus areas, years practicing..."
+            value={form.bio}
+            onChange={e => setForm({ ...form, bio: e.target.value })}
+            style={{ ...inputStyle, minHeight: "90px", resize: "vertical" }}
+          />
+        </div>
+
+        {/* LICENSE NUMBER */}
+        <div style={{ marginBottom: "18px" }}>
+          <label style={labelStyle}>License / Registration Number (optional)</label>
+          <input aria-label="License / Registration Number"
+            placeholder="e.g. KVB-2024-00123"
+            value={form.license_number}
+            onChange={e => setForm({ ...form, license_number: e.target.value })}
+            style={inputStyle}
+          />
+          <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--fc-fg-gray400)" }}>
+            Helps admins verify you faster. Document upload is coming in a future update.
+          </p>
+        </div>
+
+        {/* BASE FEE */}
+        <div style={{ marginBottom: "22px" }}>
+          <label style={labelStyle}>Typical Visit Fee (KES, optional)</label>
+          <input aria-label="Typical Visit Fee"
+            type="number" placeholder="e.g. 1500"
+            value={form.base_fee}
+            onChange={e => setForm({ ...form, base_fee: e.target.value })}
+            style={inputStyle}
+          />
+        </div>
+
+        {/* SERVICE COUNTIES */}
+        <div style={{ marginBottom: "22px" }}>
+          <label style={labelStyle}>Counties You Serve</label>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+            {KENYA_COUNTIES.map(county => {
+              const active = form.service_counties.includes(county);
+              return (
+                <button
+                  key={county}
+                  type="button"
+                  onClick={() => toggleArrayValue("service_counties", county)}
+                  style={{
+                    padding: "6px 14px", borderRadius: "16px",
+                    border: `1.5px solid ${active ? "var(--fc-line-green700)" : "var(--fc-line-gray200)"}`,
+                    background: active ? "var(--fc-bg-green50)" : "var(--fc-bg-gray0)",
+                    color: active ? "var(--fc-fg-green700)" : "var(--fc-fg-gray700)",
+                    fontWeight: "600", fontSize: "13px", cursor: "pointer"
+                  }}
+                >
+                  {county}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* SPECIALIZATIONS */}
+        <div style={{ marginBottom: "22px" }}>
+          <label style={labelStyle}>Specializations</label>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+            {SPECIALIZATION_OPTIONS.map(spec => {
+              const active = form.specializations.includes(spec);
+              return (
+                <button
+                  key={spec}
+                  type="button"
+                  onClick={() => toggleArrayValue("specializations", spec)}
+                  style={{
+                    padding: "6px 14px", borderRadius: "16px",
+                    border: `1.5px solid ${active ? "var(--fc-line-green700)" : "var(--fc-line-gray200)"}`,
+                    background: active ? "var(--fc-bg-green50)" : "var(--fc-bg-gray0)",
+                    color: active ? "var(--fc-fg-green700)" : "var(--fc-fg-gray700)",
+                    fontWeight: "600", fontSize: "13px", cursor: "pointer"
+                  }}
+                >
+                  {spec}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* AVAILABILITY (Phase 4.2) */}
+        <div style={{ marginBottom: "22px" }}>
+          <label style={labelStyle}>Working Days</label>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px", marginBottom: "14px" }}>
+            {WEEKDAYS.map(day => {
+              const active = form.working_days.includes(day.value);
+              return (
+                <button
+                  key={day.value}
+                  type="button"
+                  onClick={() => toggleArrayValue("working_days", day.value)}
+                  style={{
+                    padding: "6px 14px", borderRadius: "16px",
+                    border: `1.5px solid ${active ? "var(--fc-line-green700)" : "var(--fc-line-gray200)"}`,
+                    background: active ? "var(--fc-bg-green50)" : "var(--fc-bg-gray0)",
+                    color: active ? "var(--fc-fg-green700)" : "var(--fc-fg-gray700)",
+                    fontWeight: "600", fontSize: "13px", cursor: "pointer"
+                  }}
+                >
+                  {day.label}
+                </button>
+              );
+            })}
+          </div>
+          {/* Side by side when there's room; stacked on small phones, where
+              two time pickers can't shrink enough to fit in one row. */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 150px), 1fr))", gap: "12px" }}>
+            <div>
+              <label style={labelStyle}>Available From</label>
+              <input aria-label="Available From"
+                type="time"
+                value={form.available_start_time}
+                onChange={e => setForm({ ...form, available_start_time: e.target.value })}
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Available Until</label>
+              <input aria-label="Available Until"
+                type="time"
+                value={form.available_end_time}
+                onChange={e => setForm({ ...form, available_end_time: e.target.value })}
+                style={inputStyle}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* BLOCKED DATES (Phase 4.2) */}
+        <div style={{ marginBottom: "22px" }}>
+          <label style={labelStyle}>Blocked Dates</label>
+          <p style={{ margin: "0 0 10px", fontSize: "12px", color: "var(--fc-fg-gray400)" }}>
+            Days you're fully unavailable — leave, travel, etc.
+          </p>
+          <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+            <input
+              type="date" aria-label="Unavailable date"
+              value={newBlockedDate}
+              onChange={e => setNewBlockedDate(e.target.value)}
+              style={inputStyle}
+            />
+            <button
+              type="button"
+              onClick={addBlockedDate}
+              style={{
+                flexShrink: 0, padding: "0 16px", border: "none", borderRadius: "12px",
+                background: "var(--fc-bg-gray900)", color: "var(--fc-fg-gray0)", fontWeight: "700",
+                cursor: "pointer", display: "flex", alignItems: "center", gap: "6px"
+              }}
+            >
+              <Plus size={16} /> Block
+            </button>
+          </div>
+          {blockedDateError && (
+            <p style={{ margin: "0 0 10px", fontSize: "12px", color: "var(--fc-fg-red600)" }}>{blockedDateError}</p>
+          )}
+          {blockedDates.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+              {blockedDates.map(bd => (
+                <span key={bd.id} style={{
+                  display: "flex", alignItems: "center", gap: "6px",
+                  padding: "6px 10px", borderRadius: "16px",
+                  background: "var(--fc-bg-gray100)", color: "var(--fc-fg-gray700)", fontSize: "13px", fontWeight: "600"
+                }}>
+                  <CalendarOff size={13} />
+                  {bd.blocked_date}
+                  <button
+                    type="button"
+                    onClick={() => removeBlockedDate(bd.id)}
+                    aria-label={`Unblock ${bd.blocked_date}`}
+                    style={{ background: "none", border: "none", cursor: "pointer", display: "flex", padding: 0 }}
+                  >
+                    <Trash2 size={13} color="var(--fc-fg-gray400)" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* EMERGENCY AVAILABILITY */}
+        <label style={{
+          display: "flex", alignItems: "center", gap: "10px",
+          padding: "14px 16px", borderRadius: "12px",
+          background: "var(--fc-bg-red50)", border: "1px solid var(--fc-line-red200)",
+          marginBottom: "24px", cursor: "pointer"
+        }}>
+          <input
+            type="checkbox"
+            checked={form.accepts_emergency}
+            onChange={e => setForm({ ...form, accepts_emergency: e.target.checked })}
+            style={{ width: "18px", height: "18px", accentColor: "var(--fc-fg-red500)" }}
+          />
+          <span style={{ fontSize: "13px", fontWeight: "600", color: "var(--fc-fg-red800)" }}>
+            I'm available for emergency requests
+          </span>
+        </label>
+
+        {error && (
+          <div style={{
+            background: "var(--fc-bg-red50)", border: "1px solid var(--fc-line-red200)",
+            color: "var(--fc-fg-red600)", padding: "10px 14px",
+            borderRadius: "8px", fontSize: "13px", marginBottom: "16px"
+          }}>
+            <AlertTriangle size={14} aria-hidden="true" /> {error}
+          </div>
+        )}
+
+        <button
+          type="submit"
+          disabled={saving}
+          style={{
+            width: "100%", padding: "14px",
+            background: saving ? "var(--fc-bg-green300)" : "#15803d",
+            color: "var(--fc-fg-gray0)", border: "none", borderRadius: "12px",
+            fontWeight: "700", fontSize: "15px",
+            cursor: saving ? "not-allowed" : "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: "8px"
+          }}
+        >
+          <Save size={16} />
+          {saving ? "Saving..." : saved ? "Saved ✓" : (currentStatus !== "missing" ? "Update Profile" : "Submit for Review")}
+        </button>
+      </form>
+    </div>
+  );
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.kiliforma.app",
+      "sha256_cert_fingerprints": [
+        "6C:83:45:9B:A5:39:52:74:8C:4D:91:24:DB:FD:E2:80:7F:D6:59:EC:4B:98:91:5F:4F:00:E6:D1:FF:F2:CC:B3"
+      ]
+    }
+  }
+]

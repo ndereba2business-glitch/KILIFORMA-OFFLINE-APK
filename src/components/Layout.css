@@ -1,0 +1,381 @@
+/* ===== Layout shell (farmer, vet, admin) =====
+   A white sidebar with a hairline, the same as the supplier shell, so the
+   three roles look like one product. Values come from styles/tokens.css. */
+.fc-layout {
+  display: flex;
+  min-height: 100vh;
+  background: var(--fc-bg);
+}
+
+/* ===== Mobile backdrop ===== */
+.fc-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+/* ===== Sidebar ===== */
+.fc-sidebar {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 50;
+  width: 264px;
+  max-width: 86vw;
+  padding: 16px 12px;
+  display: flex;
+  flex-direction: column;
+  background: var(--fc-surface);
+  border-right: 1px solid var(--fc-line);
+  overflow-y: auto;
+  transform: translateX(-100%);
+  box-shadow: none;
+  transition: transform 0.25s ease;
+}
+
+.fc-sidebar--open {
+  transform: translateX(0);
+  box-shadow: var(--fc-shadow-raised);
+}
+
+/* ===== Sidebar header ===== */
+.fc-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.fc-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-left: 4px;
+}
+
+.fc-logo-line1 {
+  color: var(--fc-ink);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.fc-logo-line2 {
+  color: var(--fc-link);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+}
+
+.fc-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--fc-radius-md);
+  background: var(--fc-surface);
+  border: 1px solid var(--fc-line);
+  color: var(--fc-ink-2);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.fc-close-btn:hover {
+  background: var(--fc-bg-gray100);
+}
+
+/* ===== Role badge ===== */
+.fc-role-badge-wrap {
+  padding-left: 4px;
+  margin-bottom: 12px;
+}
+
+.fc-role-badge {
+  display: inline-block;
+  background: var(--fc-bg-gray100);
+  color: var(--fc-ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 10px;
+  border-radius: var(--fc-radius-pill);
+  text-transform: capitalize;
+}
+
+/* ===== Nav ===== */
+.fc-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+}
+
+.fc-nav-link-wrap {
+  text-decoration: none;
+  border-radius: var(--fc-radius-md);
+}
+
+.fc-nav-link {
+  min-height: 46px;
+  border-radius: var(--fc-radius-md);
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--fc-fg-gray600);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.fc-nav-link:hover {
+  background: var(--fc-bg-gray100);
+  color: var(--fc-ink);
+}
+
+.fc-nav-link--active,
+.fc-nav-link--active:hover {
+  background: var(--fc-primary-soft);
+  color: var(--fc-primary-hover);
+}
+
+.fc-nav-link-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.fc-nav-icon {
+  color: inherit;
+}
+
+.fc-nav-label {
+  font-size: 15px;
+  font-weight: 500;
+}
+.fc-nav-link--active .fc-nav-label {
+  font-weight: 600;
+}
+
+.fc-nav-chevron {
+  color: inherit;
+  opacity: 0.7;
+}
+
+/* ===== Sidebar footer / user card ===== */
+.fc-sidebar-footer {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--fc-line);
+}
+
+.fc-user-card {
+  padding: 8px 4px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fc-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--fc-primary-soft);
+  border: 1px solid var(--fc-primary-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fc-primary-hover);
+  font-weight: 700;
+  font-size: 15px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.fc-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.fc-user-info {
+  overflow: hidden;
+  min-width: 0;
+}
+
+.fc-user-name {
+  color: var(--fc-ink);
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fc-user-email {
+  color: var(--fc-muted);
+  font-size: 12px;
+  margin-top: 1px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fc-signout-btn {
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-radius: var(--fc-radius-md);
+  border: none;
+  background: transparent;
+  color: var(--fc-fg-gray600);
+  font-weight: 500;
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.fc-signout-btn:hover {
+  background: var(--fc-danger-soft);
+  color: var(--fc-danger);
+}
+
+/* ===== App wrapper (right side) ===== */
+.fc-app-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+/* ===== Top bar ===== */
+.fc-topbar {
+  height: 56px;
+  background: var(--fc-surface);
+  border-bottom: 1px solid var(--fc-line);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  flex-shrink: 0;
+}
+
+.fc-hamburger-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: var(--fc-radius-md);
+  background: none;
+  border: 1px solid var(--fc-line);
+  color: var(--fc-ink-2);
+  cursor: pointer;
+}
+.fc-hamburger-btn:hover {
+  background: var(--fc-bg-gray50);
+}
+
+/* On a phone the sidebar is closed, so the bar carries the name. */
+.fc-topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--fc-ink);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.fc-topbar-brand b {
+  color: var(--fc-link);
+  font-weight: 700;
+}
+
+.fc-topbar-spacer {
+  flex: 1;
+}
+
+.fc-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ===== Main content ===== */
+.fc-main {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+  background: var(--fc-bg);
+}
+
+.fc-main-inner {
+  max-width: 1280px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+@media (max-width: 339px) {
+  /* the smallest phones: the mark alone, so the bell is never squeezed */
+  .fc-topbar-brand span { display: none; }
+}
+
+@media (min-width: 640px) {
+  .fc-topbar {
+    padding: 0 24px;
+  }
+  .fc-main {
+    padding: 24px;
+  }
+}
+
+/* ===== Desktop: the sidebar is always there ===== */
+@media (min-width: 1024px) {
+  .fc-layout {
+    height: 100vh;
+    overflow: hidden; /* the outer shell itself never scrolls */
+  }
+
+  .fc-sidebar {
+    position: relative;
+    transform: none;
+    z-index: 0;
+    box-shadow: none;
+    height: 100vh;        /* pinned to full viewport height */
+    overflow-y: auto;      /* sidebar scrolls internally, on its own */
+    flex-shrink: 0;
+  }
+
+  .fc-backdrop,
+  .fc-close-btn,
+  .fc-hamburger-btn,
+  .fc-topbar-brand {
+    display: none;
+  }
+
+  .fc-topbar {
+    height: 64px;
+  }
+
+  .fc-main {
+    padding: 32px;
+    overflow-y: auto;    /* only the content area scrolls */
+  }
+
+  .fc-app-wrapper {
+    height: 100vh;
+    overflow: hidden;
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "appId": "com.kiliforma.app",
+  "appName": "Kiliforma",
+  "webDir": "../dist",
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": false
+  },
+  "server": {
+    "androidScheme": "https",
+    "errorPath": "index.html"
+  }
+}

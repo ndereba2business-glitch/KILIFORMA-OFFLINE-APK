@@ -1,0 +1,211 @@
+import BrandMark from "./BrandMark";
+import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import NotificationsBell from "./NotificationsBell";
+import OnboardingTour from "./OnboardingTour";
+import OfflineBanner from "./OfflineBanner";
+import TermsGate from "./TermsGate";
+import ThemeToggle from "./ThemeToggle";
+import { lazy, Suspense, useState } from "react";
+import {
+  LayoutDashboard, ShoppingBag, Egg, Stethoscope,
+  Users, Shield,
+  ClipboardList, UserCircle, ChevronRight,
+  Bird, Image, CheckSquare, LogOut,
+  Package, Calculator, Menu, X, CalendarClock
+} from "lucide-react";
+import "./Layout.css";
+import { IN_APP_ORDERING, POLICIES_PUBLISHED } from "../config/features";
+
+const FARMER_NAV = [
+  { name: "Dashboard", path: "/", icon: LayoutDashboard },
+  { name: "Marketplace", path: "/marketplace", icon: ShoppingBag },
+  ...(IN_APP_ORDERING ? [{ name: "My Orders", path: "/orders", icon: Package }] : []),
+  { name: "My Farm", path: "/my-farm", icon: Egg },
+  { name: "Ask Vet", path: "/bookings", icon: Stethoscope },
+  { name: "Community", path: "/community", icon: Users },
+  { name: "Clucky AI", path: "/clucky", icon: Bird },
+  { name: "Feed Calculator", path: "/feed-calculator", icon: Calculator },
+  { name: "Tasks", path: "/tasks", icon: CheckSquare },
+  { name: "Gallery", path: "/gallery", icon: Image },
+  { name: "Profile", path: "/profile", icon: UserCircle },
+];
+
+const VET_NAV = [
+  { name: "Vet Dashboard", path: "/vet", icon: Stethoscope },
+  { name: "Appointments", path: "/appointments", icon: CalendarClock },
+  { name: "My Farmers", path: "/vet/farmers", icon: Users },
+  { name: "My Vet Profile", path: "/vet-profile", icon: ClipboardList },
+  { name: "Community", path: "/community", icon: Users },
+  { name: "Profile", path: "/profile", icon: UserCircle },
+];
+
+// Suppliers get their own shell (sidebar, header, mobile tabs); loaded lazily
+// so farmer/vet/admin bundles don't carry it.
+const SupplierShell = lazy(() => import("./supplier/SupplierShell"));
+
+const ADMIN_NAV = [
+  { name: "Admin Panel", path: "/admin", icon: Shield },
+  { name: "Verifications", path: "/verifications", icon: ClipboardList },
+  { name: "Marketplace", path: "/marketplace", icon: ShoppingBag },
+  { name: "Community", path: "/community", icon: Users },
+];
+
+export default function Layout() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const { role, userEmail, profile, logout } = useAuth();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  async function handleLogout() {
+    await logout();
+    navigate("/login");
+  }
+
+  // Each role sees only its own menu. The admin links live in ADMIN_NAV,
+  // which only a role of "admin" gets; that role comes from app_metadata
+  // (see extractRole in AuthContext), and the admin routes are still
+  // guarded by ProtectedRoute either way.
+  const navItems =
+    role === "admin" ? ADMIN_NAV :
+    role === "vet" ? VET_NAV :
+    FARMER_NAV;
+
+  const initials = (profile?.full_name || userEmail || "U")
+    .charAt(0).toUpperCase();
+
+  if (role === "supplier") {
+    return (
+      <Suspense fallback={<div className="fc-layout" />}>
+        <SupplierShell />
+      </Suspense>
+    );
+  }
+
+  return (
+    <div className="fc-layout">
+
+      <OnboardingTour />
+      <TermsGate />
+
+      {/* MOBILE BACKDROP OVERLAY */}
+      {sidebarOpen && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="fc-backdrop"
+        />
+      )}
+
+      {/* SIDEBAR */}
+      <aside className={`fc-sidebar ${sidebarOpen ? "fc-sidebar--open" : ""}`}>
+
+        <div className="fc-sidebar-header">
+          <div className="fc-brand">
+            <BrandMark size={40} title="" />
+            <div>
+              <div className="fc-logo-line1">Kili</div>
+              <div className="fc-logo-line2">forma</div>
+            </div>
+          </div>
+
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="fc-close-btn"
+            aria-label="Close menu"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="fc-role-badge-wrap">
+          <span className="fc-role-badge">{role || "farmer"}</span>
+        </div>
+
+        <nav className="fc-nav">
+          {navItems.map((item) => {
+            const Icon = item.icon;
+            const active = item.path === "/"
+              ? location.pathname === "/"
+              : location.pathname.startsWith(item.path);
+
+            return (
+              <Link
+                key={item.path}
+                to={item.path}
+                onClick={() => setSidebarOpen(false)}
+                className="fc-nav-link-wrap"
+              >
+                <div className={`fc-nav-link ${active ? "fc-nav-link--active" : ""}`}>
+                  <div className="fc-nav-link-left">
+                    <Icon size={20} className="fc-nav-icon" />
+                    <span className="fc-nav-label">{item.name}</span>
+                  </div>
+                  {active && <ChevronRight size={16} className="fc-nav-chevron" />}
+                </div>
+              </Link>
+            );
+          })}
+        </nav>
+
+        <div className="fc-sidebar-footer">
+          <div className="fc-user-card">
+            <div className="fc-avatar">
+              {profile?.avatar_url ? (
+                <img src={profile.avatar_url} alt="avatar" />
+              ) : initials}
+            </div>
+            <div className="fc-user-info">
+              <div className="fc-user-name">{profile?.full_name || "Farmer"}</div>
+              <div className="fc-user-email">{userEmail}</div>
+            </div>
+          </div>
+
+          <button onClick={handleLogout} className="fc-signout-btn">
+            <LogOut size={18} aria-hidden="true" />
+            Sign Out
+          </button>
+
+          {POLICIES_PUBLISHED && (
+            <p className="fc-policy-links">
+              <Link to="/privacy">Privacy</Link>
+              <Link to="/terms">Terms and rules</Link>
+            </p>
+          )}
+        </div>
+      </aside>
+
+      {/* APP WRAPPER */}
+      <div className="fc-app-wrapper">
+
+        <header className="fc-topbar">
+          <button
+            onClick={() => setSidebarOpen(true)}
+            className="fc-hamburger-btn"
+            aria-label="Open menu"
+          >
+            <Menu size={20} />
+          </button>
+
+          <Link to={navItems[0].path} className="fc-topbar-brand" aria-label="Kiliforma home">
+            <BrandMark size={28} title="" />
+            <span>Kili<b>forma</b></span>
+          </Link>
+
+          <div className="fc-topbar-spacer" />
+
+          <div className="fc-topbar-right">
+            <ThemeToggle />
+            <NotificationsBell userEmail={userEmail} />
+          </div>
+        </header>
+
+        <main className="fc-main">
+          <OfflineBanner />
+          <div className="fc-main-inner">
+            <Outlet />
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}

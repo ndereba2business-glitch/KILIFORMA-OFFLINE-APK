@@ -1,0 +1,1417 @@
+import { useEffect, useState } from "react";
+import { supabase } from "../lib/supabaseClient";
+import { createNotification } from "../lib/notifications";
+import {
+  Search, Plus, MapPin, ShoppingBag,
+  ChevronDown, X, ShoppingCart, Phone, MessageCircle, BadgeCheck, Check, Pencil, Package, Trash2, ImagePlus, Flag
+} from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import { IN_APP_ORDERING } from "../config/features";
+import { AVAILABILITY, freshness, minOrderText, priceText, unitSuffix } from "../lib/productListing";
+import { productMessage, recordContact, telHref, whatsappHref } from "../lib/contactSupplier";
+import { removeImageByUrl } from "../lib/imageUpload";
+import { useToast } from "../context/ToastContext";
+import ConfirmDialog from "../components/ConfirmDialog";
+import ReportDialog from "../components/ReportDialog";
+import { LISTING_REASONS, reportContent, useBlockedMembers } from "../lib/safety";
+import "../components/Account.css";
+import "./Marketplace.css";
+
+const CATEGORIES = [
+  { value: "all", label: "All Categories" },
+  { value: "chickens", label: "Chickens" },
+  { value: "eggs", label: "Eggs" },
+  { value: "feeds", label: "Feeds" },
+  { value: "equipment", label: "Equipment" },
+  { value: "medicine", label: "Medicine" },
+  { value: "other", label: "Other" },
+];
+
+const UNITS = [
+  { value: "per_bird", label: "Per Bird" },
+  { value: "per_tray", label: "Per Tray" },
+  { value: "per_kg", label: "Per KG" },
+  { value: "per_bag", label: "Per Bag" },
+  { value: "per_piece", label: "Per Piece" },
+  { value: "per_lot", label: "Per Lot" },
+];
+
+
+const inputStyle = {
+  width: "100%", padding: "11px 14px", borderRadius: "12px",
+  border: "1.5px solid var(--fc-line-gray200)", fontSize: "14px",
+  outline: "none", boxSizing: "border-box",
+  background: "var(--fc-bg-gray0)", color: "var(--fc-fg-gray900)"
+};
+
+const labelStyle = {
+  display: "block", fontSize: "13px", fontWeight: "600",
+  color: "var(--fc-fg-gray700)", marginBottom: "6px"
+};
+
+export default function Marketplace() {
+  const navigate = useNavigate();
+  const { role, userEmail } = useAuth();
+  const toast = useToast();
+  const { blocked } = useBlockedMembers(userEmail);
+  const [reportingListing, setReportingListing] = useState(null);
+  // Suppliers list through their own products page so listings are tied to
+  // their supplier profile (dashboard, directory, verified badge).
+  const startListing = () => (role === "supplier" ? navigate("/supplier/products/new") : setView("add"));
+  const [products, setProducts] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [view, setView] = useState("list");
+  const [search, setSearch] = useState("");
+  const [category, setCategory] = useState("all");
+  const [showVerifiedOnly, setShowVerifiedOnly] = useState(false);
+  const [categoryOpen, setCategoryOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [currentUserEmail, setCurrentUserEmail] = useState("");
+  const [currentUserPhone, setCurrentUserPhone] = useState("");
+  const [currentUserId, setCurrentUserId] = useState("");
+  const [paymentLoading, setPaymentLoading] = useState(false);
+  const [mySupplier, setMySupplier] = useState(null);
+  const [checkoutForm, setCheckoutForm] = useState({
+    customer_name: "", county: "", phone: ""
+  });
+  const [form, setForm] = useState({
+    product_name: "", category: "", supplier_name: "",
+    county: "", price: "", stock: "", unit: "per_bird",
+    description: "", imageFile: null, imagePreview: null, 
+    seller_phone: ""
+
+  });
+
+  // -----------------------------
+  // LOAD CURRENT USER & PROFILE PHONE
+  // -----------------------------
+  useEffect(() => {
+    async function loadUser() {
+      const { data } = await supabase.auth.getUser();
+      if (data?.user) {
+        // Identity as the database sees it: email, or the phone number for
+        // phone-only accounts (their email is ""). Products are owned by it.
+        const identity = data.user.email || data.user.phone || "";
+        // Grab phone from Supabase auth profile or metadata fallback
+        const phone = data.user.phone || data.user.user_metadata?.phone || "";
+
+        setCurrentUserEmail(identity);
+        setCurrentUserId(data.user.id);
+        setCurrentUserPhone(phone);
+
+        // This auto-fills the form state instantly when the page loads!
+        setForm(prev => ({ ...prev, seller_phone: phone }));
+
+        // A supplier account tags its listings with its supplier profile so
+        // they can be ordered and show up in that supplier's dashboard.
+        const { data: profile } = await supabase
+          .from("supplier_profiles")
+          .select("id, verification_status")
+          .eq("user_id", data.user.id)
+          .maybeSingle();
+        setMySupplier(profile || null);
+      }
+    }
+    loadUser();
+  }, []);
+  // -----------------------------
+  // FETCH PRODUCTS
+  // -----------------------------
+  // quiet: refresh after a change without swapping the list for skeletons.
+  async function fetchProducts({ quiet = false } = {}) {
+    if (!quiet) setLoading(true);
+    // The embedded supplier is only readable when it's verified (or your own),
+    // so a non-null verified status is safe to show as a trust badge.
+    const { data, error } = await supabase
+      .from("products")
+      .select("*, supplier:supplier_profiles(business_name, verification_status)")
+      .order("created_at", { ascending: false })
+      .limit(300);
+    setLoading(false);
+    if (error) {
+      // keep whatever is already on screen; only an empty page needs the banner
+      setLoadError(true);
+      return;
+    }
+    setLoadError(false);
+    setProducts(data || []);
+  }
+
+  useEffect(() => {
+    fetchProducts();
+    const channel = supabase
+      .channel("products-live")
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "products" },
+        () => fetchProducts({ quiet: true })
+      )
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, []);
+
+  // -----------------------------
+  // ADD PRODUCT
+  // -----------------------------
+  async function handleAddProduct(e) {
+    e.preventDefault();
+    if (!form.product_name || !form.category || !form.price) return;
+    setSubmitting(true);
+
+    let imageUrl = "";
+
+    if (form.imageFile) {
+      const fileExt = form.imageFile.name.split(".").pop();
+      // Storage only accepts uploads inside the user's own folder.
+      const fileName = `${currentUserId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("marketplace-images")
+        .upload(fileName, form.imageFile);
+
+      if (!uploadError) {
+        const { data: urlData } = supabase.storage
+          .from("marketplace-images")
+          .getPublicUrl(fileName);
+        imageUrl = urlData.publicUrl;
+      }
+    }
+
+    const { error } = await supabase.from("products").insert([{
+      product_name: form.product_name,
+      category: form.category,
+      supplier_name: form.supplier_name || currentUserEmail,
+      user_email: currentUserEmail,
+      county: form.county,
+      price: Number(form.price),
+      stock: Number(form.stock) || 0,
+      unit: form.unit || "per_bird",
+      image_url: imageUrl || "",
+      description: form.description || "",
+      // Uses the form text field, falls back to profile phone, or stays blank
+      seller_phone: form.seller_phone || currentUserPhone || "",
+      supplier_id: mySupplier?.id ?? null,
+      is_verified: false,
+      sold_out: false
+    }]);
+
+    if (error) {
+      console.error("Product insert error:", error.message);
+      alert("Failed to list product: " + error.message);
+      setSubmitting(false);
+      return;
+    }
+
+    if (currentUserEmail) {
+      await createNotification({
+        userEmail: currentUserEmail,
+        type: "marketplace",
+        title: "Product Listed",
+        message: `"${form.product_name}" is now live on the marketplace.`,
+        link: "/marketplace"
+      });
+    }
+
+    setForm({
+      product_name: "", category: "", supplier_name: "",
+      county: "", price: "", stock: "", unit: "per_bird",
+      description: "", imageFile: null, imagePreview: null,
+      seller_phone: ""
+    });
+    setSubmitting(false);
+    setView("list");
+    fetchProducts();
+  }
+
+  // -----------------------------
+  // CART
+  // -----------------------------
+  function addToCart(product) {
+    setCart(prev => [...prev, product]);
+  }
+
+  function removeFromCart(index) {
+    setCart(prev => prev.filter((_, i) => i !== index));
+  }
+
+  const total = cart.reduce((sum, item) => sum + Number(item.price), 0);
+
+// -----------------------------
+// CONTACT SELLER
+// -----------------------------
+// WhatsApp with the product's details pre-filled, so the seller knows which
+// listing the farmer means. The contact is counted (anonymously to the
+// seller) without delaying the chat.
+function handleContactSeller(product) {
+  const link = whatsappHref(product.seller_phone, productMessage(product));
+  if (!link) {
+    alert(
+      `The seller hasn't added a phone number yet.\n\n` +
+      `You can find them in the Community Chat and message them there.`
+    );
+    return;
+  }
+  recordContact({ productId: product.id, channel: "whatsapp" });
+  window.open(link, "_blank", "noopener");
+}
+
+  // -----------------------------
+  // CHECKOUT
+  // -----------------------------
+  async function handleCheckout() {
+    if (!checkoutForm.customer_name || !checkoutForm.county || !checkoutForm.phone) {
+      alert("Fill all delivery fields");
+      return;
+    }
+    setPaymentLoading(true);
+
+    const quantities = new Map();
+    for (const item of cart) {
+      quantities.set(item.id, (quantities.get(item.id) || 0) + 1);
+    }
+
+    // Price, fee and supplier are decided by the database, not the browser.
+    const { data: placed, error } = await supabase.rpc("place_order", {
+      p_items: [...quantities].map(([product_id, quantity]) => ({ product_id, quantity })),
+      p_customer_name: checkoutForm.customer_name,
+      p_county: checkoutForm.county,
+      p_phone: checkoutForm.phone
+    });
+
+    if (error) {
+      setPaymentLoading(false);
+      alert("Could not send your order: " + error.message);
+      return;
+    }
+
+    const phone = checkoutForm.phone;
+
+    if (currentUserEmail) {
+      await createNotification({
+        userEmail: currentUserEmail,
+        type: "marketplace",
+        title: "Order request sent",
+        message: `${placed} item(s) requested. The supplier will contact you on ${phone} to arrange payment and delivery.`,
+        link: "/orders"
+      });
+    }
+
+    setCart([]);
+    setCheckoutForm({ customer_name: "", county: "", phone: "" });
+    setPaymentLoading(false);
+    setView("list");
+    alert(`Order request sent. The supplier will contact you on ${phone} to arrange payment and delivery.`);
+  }
+
+  // -----------------------------
+  // FILTERS
+  // -----------------------------
+  const filtered = products.filter(p => {
+    const matchSearch = !search ||
+      p.product_name?.toLowerCase().includes(search.toLowerCase()) ||
+      p.description?.toLowerCase().includes(search.toLowerCase());
+    const matchCategory = category === "all" || p.category === category;
+    const matchVerified = showVerifiedOnly ? p.is_verified : true;
+    // sellers this person has blocked are left out for them alone
+    return matchSearch && matchCategory && matchVerified && !blocked.has(p.user_email);
+  });
+
+  const selectedCategoryLabel = CATEGORIES.find(c => c.value === category)?.label || "All Categories";
+
+  return (
+    <div>
+
+      {/* ======================== LIST VIEW ======================== */}
+      {view === "list" && (
+        <div>
+          {/* HEADER */}
+          <div style={{
+            display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: "12px",
+            alignItems: "flex-start", marginBottom: "24px"
+          }}>
+            <div>
+              <h1 style={{
+                margin: 0, fontSize: "clamp(28px, 8vw, 36px)", fontWeight: "700",
+                color: "var(--fc-fg-gray900)", letterSpacing: "-1px"
+              }}>
+                Marketplace
+              </h1>
+              <p style={{ marginTop: "6px", color: "var(--fc-fg-gray500)", fontSize: "15px" }}>
+                Browse poultry products from local farmers
+              </p>
+            </div>
+            <div style={{ display: "flex", gap: "10px" }}>
+              {IN_APP_ORDERING && cart.length > 0 && (
+                <button
+                  onClick={() => setView("cart")}
+                  aria-label={`View order (${cart.length} items)`}
+                  style={{
+                    height: "44px", padding: "0 16px",
+                    border: "1.5px solid var(--fc-line-green700)", borderRadius: "12px",
+                    background: "var(--fc-bg-green50)", color: "var(--fc-fg-green700)",
+                    fontWeight: "700", cursor: "pointer", fontSize: "14px",
+                    display: "flex", alignItems: "center", gap: "8px"
+                  }}
+                >
+                  <ShoppingCart size={18} /> Order ({cart.length})
+                </button>
+              )}
+              <button
+                onClick={startListing}
+                style={{
+                  height: "44px", padding: "0 20px", border: "none",
+                  borderRadius: "12px",
+                  background: "#15803d",
+                  color: "white", fontWeight: "700", cursor: "pointer",
+                  fontSize: "14px", display: "flex", alignItems: "center",
+                  gap: "8px", boxShadow: "none"
+                }}
+              >
+                <Plus size={18} /> List Product
+              </button>
+            </div>
+          </div>
+
+          {/* FILTERS */}
+          <div style={{
+            display: "flex", gap: "12px",
+            marginBottom: "24px", flexWrap: "wrap"
+          }}>
+            <div style={{ flex: 1, minWidth: "200px", position: "relative" }}>
+              <Search size={16} style={{
+                position: "absolute", left: "14px",
+                top: "50%", transform: "translateY(-50%)", color: "var(--fc-fg-gray400)"
+              }} />
+              <input
+                aria-label="Search products"
+                placeholder="Search products..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                style={{ ...inputStyle, paddingLeft: "40px", minHeight: "44px", fontSize: "16px" }}
+              />
+            </div>
+
+            <div style={{ position: "relative" }}>
+              <button
+                onClick={() => setCategoryOpen(!categoryOpen)}
+                style={{
+                  height: "44px", padding: "0 16px", borderRadius: "12px",
+                  border: "1.5px solid var(--fc-line-gray200)", background: "var(--fc-bg-gray0)",
+                  cursor: "pointer", fontSize: "14px", color: "var(--fc-fg-gray700)",
+                  display: "flex", alignItems: "center", gap: "8px",
+                  fontWeight: "500", minWidth: "180px",
+                  justifyContent: "space-between"
+                }}
+              >
+                {selectedCategoryLabel}
+                <ChevronDown size={16} color="var(--fc-fg-gray400)" />
+              </button>
+              {categoryOpen && (
+                <div style={{
+                  position: "absolute", top: "50px", left: 0,
+                  background: "var(--fc-bg-gray0)", borderRadius: "12px",
+                  boxShadow: "0 10px 40px rgba(0,0,0,0.12)",
+                  border: "1px solid var(--fc-line-gray101)", zIndex: 999,
+                  minWidth: "200px", overflow: "hidden"
+                }}>
+                  {CATEGORIES.map(cat => (
+                    <div
+                      key={cat.value}
+                      onClick={() => { setCategory(cat.value); setCategoryOpen(false); }}
+                      style={{
+                        padding: "11px 16px", cursor: "pointer",
+                        fontSize: "14px",
+                        color: category === cat.value ? "var(--fc-fg-green700)" : "var(--fc-fg-gray700)",
+                        fontWeight: category === cat.value ? "600" : "400",
+                        background: category === cat.value ? "var(--fc-bg-green50)" : "var(--fc-bg-gray0)",
+                        display: "flex", justifyContent: "space-between",
+                        alignItems: "center"
+                      }}
+                    >
+                      {cat.label}
+                      {category === cat.value && <span>✓</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={() => setShowVerifiedOnly(!showVerifiedOnly)}
+              style={{
+                height: "44px", padding: "0 16px", borderRadius: "12px",
+                border: `1.5px solid ${showVerifiedOnly ? "var(--fc-line-green700)" : "var(--fc-line-gray200)"}`,
+                background: showVerifiedOnly ? "var(--fc-bg-green50)" : "var(--fc-bg-gray0)",
+                color: showVerifiedOnly ? "var(--fc-fg-green700)" : "var(--fc-fg-gray500)",
+                cursor: "pointer", fontSize: "14px", fontWeight: "600"
+              }}
+            >
+              <Check size={14} aria-hidden="true" /> Verified Only
+            </button>
+          </div>
+
+          {/* LOADING SKELETONS */}
+          {loading && (
+            <div className="marketplace-grid" style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+              gap: "20px"
+            }}>
+              {[1,2,3,4,5,6].map(i => (
+                <div key={i} style={{
+                  borderRadius: "16px", overflow: "hidden",
+                  border: "1px solid var(--fc-line-gray101)", background: "var(--fc-bg-gray0)"
+                }}>
+                  <div style={{ height: "200px", background: "var(--fc-bg-gray100)" }} />
+                  <div style={{ padding: "16px" }}>
+                    <div style={{
+                      height: "16px", background: "var(--fc-bg-gray100)",
+                      borderRadius: "6px", marginBottom: "10px", width: "75%"
+                    }} />
+                    <div style={{
+                      height: "20px", background: "var(--fc-bg-gray100)",
+                      borderRadius: "6px", width: "40%"
+                    }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* COULD NOT LOAD */}
+          {!loading && loadError && (
+            <div role="alert" className="mk-load-error">
+              <span>We couldn't load the marketplace. Check your connection and try again.</span>
+              <button type="button" className="fc-btn fc-btn--secondary" onClick={() => fetchProducts()}>Try again</button>
+            </div>
+          )}
+
+          {/* EMPTY STATE */}
+          {!loading && !loadError && filtered.length === 0 && (
+            <div style={{
+              textAlign: "center", padding: "80px 20px",
+              background: "var(--fc-bg-gray0)", borderRadius: "16px",
+              border: "1px solid var(--fc-line-gray101)"
+            }}>
+              <ShoppingBag size={64} color="var(--fc-fg-gray200)"
+                style={{ marginBottom: "16px" }} />
+              <h3 style={{
+                fontSize: "18px", fontWeight: "700",
+                color: "var(--fc-fg-gray900)", margin: "0 0 8px"
+              }}>
+                No products found
+              </h3>
+              <p style={{
+                color: "var(--fc-fg-gray400)", fontSize: "14px", marginBottom: "20px"
+              }}>
+                Try a different search or be the first to list!
+              </p>
+              <button
+                onClick={startListing}
+                style={{
+                  minHeight: "44px", padding: "12px 24px", background: "#15803d",
+                  color: "var(--fc-fg-gray0)", border: "none", borderRadius: "12px",
+                  fontWeight: "700", fontSize: "14px", cursor: "pointer"
+                }}
+              >
+                List Your Product
+              </button>
+            </div>
+          )}
+
+          {/* PRODUCT GRID */}
+          {!loading && filtered.length > 0 && (
+            <div className="marketplace-grid" style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+              gap: "20px"
+            }}>
+              {filtered.map(p => (
+                <ProductCard
+                  key={p.id}
+                  product={p}
+                  onAddToCart={addToCart}
+                  onContactSeller={handleContactSeller}
+                  currentUserEmail={currentUserEmail}
+                  currentUserId={currentUserId}
+                  onReport={setReportingListing}
+                  onProductUpdated={() => fetchProducts({ quiet: true })}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {reportingListing && (
+        <ReportDialog
+          title="Report this listing"
+          preview={`${reportingListing.product_name}, ${priceText(reportingListing)}${unitSuffix(reportingListing.unit)}, by ${reportingListing.supplier_name || "a farmer"}`}
+          reasons={LISTING_REASONS}
+          onSubmit={reason => reportContent({
+            kind: "listing", targetId: reportingListing.id, reporter: userEmail, reason,
+            summary: `${reportingListing.product_name}, ${priceText(reportingListing)}${unitSuffix(reportingListing.unit)}, by ${reportingListing.supplier_name || "a farmer"}`
+          })}
+          onClose={() => setReportingListing(null)}
+          onSent={already => {
+            toast.success(already ? "You've already reported this listing. An admin will review it." : "Thanks. An admin will review this listing.");
+            setReportingListing(null);
+          }}
+        />
+      )}
+
+      {/* ======================== ADD PRODUCT ======================== */}
+      {view === "add" && (
+        <div style={{ maxWidth: "680px" }}>
+          <div style={{
+            display: "flex", alignItems: "center",
+            gap: "16px", marginBottom: "28px"
+          }}>
+            <button
+              onClick={() => setView("list")}
+              style={{
+                width: "38px", height: "38px", borderRadius: "12px",
+                border: "1.5px solid var(--fc-line-gray200)", background: "var(--fc-bg-gray0)",
+                cursor: "pointer", display: "flex",
+                alignItems: "center", justifyContent: "center"
+              }}
+            >
+              <X size={18} color="var(--fc-fg-gray700)" />
+            </button>
+            <div>
+              <h1 style={{
+                margin: 0, fontSize: "28px",
+                fontWeight: "700", color: "var(--fc-fg-gray900)"
+              }}>
+                List a Product
+              </h1>
+              <p style={{ margin: "4px 0 0", color: "var(--fc-fg-gray500)", fontSize: "14px" }}>
+                Share your poultry products with buyers
+              </p>
+            </div>
+          </div>
+
+          <div style={{
+            background: "var(--fc-bg-gray0)", borderRadius: "16px",
+            border: "1px solid var(--fc-line-gray200)", padding: "28px",
+            boxShadow: "var(--fc-shadow-card)"
+          }}>
+            <form onSubmit={handleAddProduct}>
+
+              <div style={{ marginBottom: "20px" }}>
+                <label style={labelStyle}>Product Title</label>
+                <input
+                  placeholder="e.g., Fresh Farm Eggs"
+                  value={form.product_name}
+                  onChange={e => setForm({ ...form, product_name: e.target.value })}
+                  required style={inputStyle}
+                />
+              </div>
+
+              <div style={{ marginBottom: "20px" }}>
+                <label style={labelStyle}>Category</label>
+                <select
+                  value={form.category}
+                  onChange={e => setForm({ ...form, category: e.target.value })}
+                  required
+                  style={{ ...inputStyle, appearance: "none" }}
+                >
+                  <option value="">Select category</option>
+                  {CATEGORIES.filter(c => c.value !== "all").map(c => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{
+                display: "grid", gridTemplateColumns: "1fr 1fr",
+                gap: "16px", marginBottom: "20px"
+              }}>
+                <div>
+                  <label style={labelStyle}>Price (KES)</label>
+                  <input
+                    type="number" placeholder="0.00"
+                    value={form.price}
+                    onChange={e => setForm({ ...form, price: e.target.value })}
+                    required style={inputStyle}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>Unit</label>
+                  <select
+                    value={form.unit}
+                    onChange={e => setForm({ ...form, unit: e.target.value })}
+                    style={{ ...inputStyle, appearance: "none" }}
+                  >
+                    {UNITS.map(u => (
+                      <option key={u.value} value={u.value}>{u.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{
+                display: "grid", gridTemplateColumns: "1fr 1fr",
+                gap: "16px", marginBottom: "20px"
+              }}>
+                <div>
+                  <label style={labelStyle}>Quantity Available</label>
+                  <input
+                    type="number" placeholder="Optional"
+                    value={form.stock}
+                    onChange={e => setForm({ ...form, stock: e.target.value })}
+                    style={inputStyle}
+                  />
+                </div>
+                <div>
+                  <label style={labelStyle}>Location</label>
+                  <input
+                    placeholder="e.g., Nairobi, Kenya"
+                    value={form.county}
+                    onChange={e => setForm({ ...form, county: e.target.value })}
+                    style={inputStyle}
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: "20px" }}>
+                <label style={labelStyle}>Supplier / Your Name</label>
+                <input
+                  placeholder="Your name or business name"
+                  value={form.supplier_name}
+                  onChange={e => setForm({ ...form, supplier_name: e.target.value })}
+                  style={inputStyle}
+                />
+              </div>
+
+              <div style={{ marginBottom: "20px" }}>
+                <label style={labelStyle}>
+                  WhatsApp Number
+                  <span style={{ color: "var(--fc-fg-green700)", fontSize: "11px", fontWeight: "500", marginLeft: "6px" }}>
+                    (Buyers will contact you here)
+                  </span>
+                </label>
+                <input
+                  placeholder="e.g. 0712345678"
+                  value={form.seller_phone}
+                  onChange={e => setForm({ ...form, seller_phone: e.target.value })}
+                  style={inputStyle}
+                />
+              </div>
+
+              <div style={{ marginBottom: "20px" }}>
+                <label style={labelStyle}>Description</label>
+                <textarea
+                  placeholder="Describe your product..."
+                  value={form.description}
+                  onChange={e => setForm({ ...form, description: e.target.value })}
+                  style={{ ...inputStyle, minHeight: "100px", resize: "vertical" }}
+                />
+              </div>
+
+              {/* IMAGE UPLOAD */}
+              <div style={{ marginBottom: "28px" }}>
+                <label style={labelStyle}>Product Image (optional)</label>
+                <div
+                  onClick={() => document.getElementById("product-image-upload").click()}
+                  style={{
+                    border: "2px dashed var(--fc-line-green101)", borderRadius: "12px",
+                    padding: "24px", textAlign: "center", cursor: "pointer",
+                    background: form.imagePreview ? "var(--fc-bg-green50)" : "var(--fc-bg-gray25)",
+                    transition: "all 0.2s"
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = "var(--fc-line-green700)"}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = "var(--fc-line-green101)"}
+                >
+                  {form.imagePreview ? (
+                    <div style={{ position: "relative", display: "inline-block" }}>
+                      <img
+                        src={form.imagePreview}
+                        alt="Preview"
+                        style={{
+                          maxHeight: "160px", maxWidth: "100%",
+                          borderRadius: "12px", objectFit: "cover"
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setForm({ ...form, imageFile: null, imagePreview: null });
+                        }}
+                        style={{
+                          position: "absolute", top: "-8px", right: "-8px",
+                          width: "24px", height: "24px", borderRadius: "50%",
+                          background: "#dc2626", color: "var(--fc-fg-gray0)", border: "none",
+                          cursor: "pointer", fontWeight: "700", fontSize: "14px",
+                          display: "flex", alignItems: "center", justifyContent: "center"
+                        }}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ) : (
+                    <div>
+                      <ImagePlus size={28} color="var(--fc-fg-gray400)" aria-hidden="true" style={{ display: "block", margin: "0 auto 8px" }} />
+                      <div style={{
+                        fontWeight: "600", color: "var(--fc-fg-gray700)", fontSize: "14px"
+                      }}>
+                        Click to upload image
+                      </div>
+                      <div style={{
+                        color: "var(--fc-fg-gray400)", fontSize: "12px", marginTop: "4px"
+                      }}>
+                        PNG, JPG or WEBP — max 5MB
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <input
+                  id="product-image-upload"
+                  type="file"
+                  accept="image/*"
+                  style={{ display: "none" }}
+                  onChange={(e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    if (file.size > 5 * 1024 * 1024) {
+                      alert("Image must be under 5MB");
+                      return;
+                    }
+                    const preview = URL.createObjectURL(file);
+                    setForm({ ...form, imageFile: file, imagePreview: preview });
+                  }}
+                />
+              </div>
+
+              <button
+                type="submit"
+                disabled={submitting}
+                style={{
+                  width: "100%", padding: "14px",
+                  background: submitting
+                    ? "var(--fc-bg-green300)"
+                    : "#15803d",
+                  color: "var(--fc-fg-gray0)", border: "none", borderRadius: "12px",
+                  fontWeight: "700", fontSize: "15px",
+                  cursor: submitting ? "not-allowed" : "pointer",
+                  boxShadow: "none"
+                }}
+              >
+                {submitting ? "Listing product..." : "List Product"}
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================== CART ======================== */}
+      {view === "cart" && (
+        <div style={{ maxWidth: "560px" }}>
+          <div style={{
+            display: "flex", alignItems: "center",
+            gap: "16px", marginBottom: "28px"
+          }}>
+            <button
+              onClick={() => setView("list")}
+              style={{
+                width: "38px", height: "38px", borderRadius: "12px",
+                border: "1.5px solid var(--fc-line-gray200)", background: "var(--fc-bg-gray0)",
+                cursor: "pointer", display: "flex",
+                alignItems: "center", justifyContent: "center"
+              }}
+            >
+              <X size={18} color="var(--fc-fg-gray700)" />
+            </button>
+            <div>
+              <h1 style={{
+                margin: 0, fontSize: "28px",
+                fontWeight: "700", color: "var(--fc-fg-gray900)"
+              }}>
+                Your Cart
+              </h1>
+              <p style={{ margin: "4px 0 0", color: "var(--fc-fg-gray500)", fontSize: "14px" }}>
+                {cart.length} item{cart.length !== 1 ? "s" : ""} in your cart
+              </p>
+            </div>
+          </div>
+
+          {cart.length === 0 ? (
+            <div style={{
+              textAlign: "center", padding: "60px 20px",
+              background: "var(--fc-bg-gray0)", borderRadius: "16px",
+              border: "1px solid var(--fc-line-gray101)"
+            }}>
+              <ShoppingCart size={48} color="var(--fc-fg-gray200)"
+                style={{ marginBottom: "12px" }} />
+              <h3 style={{ margin: "0 0 8px", color: "var(--fc-fg-gray900)" }}>
+                Your cart is empty
+              </h3>
+              <p style={{ color: "var(--fc-fg-gray400)", fontSize: "14px" }}>
+                Add products from the marketplace
+              </p>
+              <button
+                onClick={() => setView("list")}
+                style={{
+                  marginTop: "16px", padding: "10px 20px",
+                  background: "#15803d", color: "var(--fc-fg-gray0)",
+                  border: "none", borderRadius: "12px",
+                  cursor: "pointer", fontWeight: "600"
+                }}
+              >
+                Browse Products
+              </button>
+            </div>
+          ) : (
+            <div>
+              <div style={{
+                background: "var(--fc-bg-gray0)", borderRadius: "16px",
+                border: "1px solid var(--fc-line-gray200)",
+                overflow: "hidden", marginBottom: "20px"
+              }}>
+                {cart.map((item, i) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center",
+                    gap: "14px", padding: "16px 20px",
+                    borderBottom: i < cart.length - 1
+                      ? "1px solid var(--fc-line-gray100)" : "none"
+                  }}>
+                    <div style={{
+                      width: "50px", height: "50px", borderRadius: "12px",
+                      background: "var(--fc-bg-gray100)", overflow: "hidden", flexShrink: 0
+                    }}>
+                      {item.image_url ? (
+                        <img
+                          src={item.image_url}
+                          alt={item.product_name}
+                          style={{
+                            width: "100%", height: "100%", objectFit: "cover"
+                          }}
+                        />
+                      ) : (
+                        <div style={{
+                          width: "100%", height: "100%",
+                          display: "flex", alignItems: "center",
+                          justifyContent: "center"
+                        }}>
+                          <ShoppingBag size={20} color="var(--fc-fg-gray300)" />
+                        </div>
+                      )}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{
+                        fontWeight: "600", fontSize: "14px", color: "var(--fc-fg-gray900)"
+                      }}>
+                        {item.product_name}
+                      </div>
+                      <div style={{
+                        fontSize: "13px", color: "var(--fc-fg-gray500)", marginTop: "2px"
+                      }}>
+                        {item.county}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{
+                        fontWeight: "700", color: "var(--fc-fg-green700)", fontSize: "15px"
+                      }}>
+                        KES {Number(item.price).toLocaleString()}
+                      </div>
+                      <button
+                        onClick={() => removeFromCart(i)}
+                        style={{
+                          background: "none", border: "none",
+                          cursor: "pointer", color: "var(--fc-fg-red500)",
+                          fontSize: "12px", marginTop: "4px"
+                        }}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{
+                display: "flex", justifyContent: "space-between",
+                alignItems: "center", padding: "16px 20px",
+                background: "var(--fc-bg-green50)", borderRadius: "12px",
+                marginBottom: "24px"
+              }}>
+                <span style={{ fontWeight: "600", fontSize: "15px" }}>Total</span>
+                <span style={{
+                  fontWeight: "700", fontSize: "20px", color: "var(--fc-fg-green700)"
+                }}>
+                  KES {total.toLocaleString()}
+                </span>
+              </div>
+
+              <div style={{
+                background: "var(--fc-bg-gray0)", borderRadius: "16px",
+                border: "1px solid var(--fc-line-gray200)",
+                padding: "24px", marginBottom: "16px"
+              }}>
+                <h3 style={{
+                  margin: "0 0 18px", fontSize: "16px",
+                  fontWeight: "700", color: "var(--fc-fg-gray900)"
+                }}>
+                  Delivery Details
+                </h3>
+                {[
+                  { placeholder: "Your full name", key: "customer_name", label: "Full Name" },
+                  { placeholder: "Your county", key: "county", label: "County" },
+                  { placeholder: "e.g., 0712345678", key: "phone", label: "Phone number (the supplier will call you)" }
+                ].map(({ placeholder, key, label }) => (
+                  <div key={key} style={{ marginBottom: "14px" }}>
+                    <label style={labelStyle}>{label}</label>
+                    <input
+                      placeholder={placeholder}
+                      value={checkoutForm[key]}
+                      onChange={e => setCheckoutForm({
+                        ...checkoutForm, [key]: e.target.value
+                      })}
+                      style={inputStyle}
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <button
+                onClick={handleCheckout}
+                disabled={paymentLoading}
+                style={{
+                  width: "100%", padding: "14px",
+                  background: paymentLoading
+                    ? "var(--fc-bg-green300)"
+                    : "#15803d",
+                  color: "var(--fc-fg-gray0)", border: "none", borderRadius: "12px",
+                  fontWeight: "700", fontSize: "15px",
+                  cursor: paymentLoading ? "not-allowed" : "pointer",
+                  boxShadow: "none"
+                }}
+              >
+                {paymentLoading ? "Sending..." : "Send order request"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+function contactButton(primary) {
+  return {
+    // wraps to one button per row on narrow two-column phone layouts
+    flex: "1 1 104px", minHeight: "44px", padding: "0 10px",
+    display: "flex", alignItems: "center", justifyContent: "center", gap: "6px",
+    borderRadius: "12px", fontWeight: "700", fontSize: "13px",
+    textDecoration: "none", cursor: "pointer",
+    border: "1.5px solid var(--fc-line-green700)",
+    background: primary ? "#15803d" : "var(--fc-bg-green50)",
+    color: primary ? "var(--fc-fg-gray0)" : "var(--fc-fg-green700)"
+  };
+}
+
+// ======================== PRODUCT CARD ========================
+function ProductCard({ product, onAddToCart, onContactSeller, currentUserEmail, currentUserId, onProductUpdated, onReport }) {
+  const toast = useToast();
+  const [hovered, setHovered] = useState(false);
+  const [showSellerPanel, setShowSellerPanel] = useState(false);
+  const [newStock, setNewStock] = useState(product.stock || 0);
+  const [updating, setUpdating] = useState(false);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [removeError, setRemoveError] = useState("");
+
+  const isSeller = currentUserEmail && (
+    product.user_email === currentUserEmail ||
+    product.supplier_name === currentUserEmail
+  );
+
+  const categoryLabel = {
+    chickens: "Chickens", eggs: "Eggs",
+    feeds: "Feeds", equipment: "Equipment",
+    medicine: "Medicine", other: "Other"
+  }[product.category] || product.category;
+
+  // A change the database's rules refuse comes back with no error and no
+  // rows, so "nothing changed" is checked as well as "something failed".
+  async function saveChange(changes, successMessage) {
+    if (updating) return;
+    setUpdating(true);
+    const { data, error } = await supabase
+      .from("products")
+      .update(changes)
+      .eq("id", product.id)
+      .select("id");
+    setUpdating(false);
+    if (error || !data?.length) {
+      toast.error(error
+        ? "That change didn't save. Check your connection and try again."
+        : "That change didn't save. Only the person who listed this can change it.");
+      return;
+    }
+    toast.success(successMessage);
+    onProductUpdated();
+  }
+
+  function handleUpdateStock() {
+    const stock = Math.max(0, Math.floor(Number(newStock) || 0));
+    saveChange({ stock, sold_out: false }, `Stock updated to ${stock}.`);
+  }
+
+  function handleSoldOut() {
+    saveChange({ stock: 0, sold_out: true }, `"${product.product_name}" is marked out of stock.`);
+  }
+
+  // The listing leaves the page only once the database confirms it is
+  // gone; a failure keeps the question open so it can be tried again.
+  async function confirmRemove() {
+    if (updating) return;
+    setUpdating(true);
+    setRemoveError("");
+    const { data, error } = await supabase
+      .from("products")
+      .delete()
+      .eq("id", product.id)
+      .select("id");
+    setUpdating(false);
+    if (error) {
+      setRemoveError("The listing wasn't removed. Check your connection and try again.");
+      return;
+    }
+    if (!data?.length) {
+      setRemoveError("The listing wasn't removed. Only the person who listed it can remove it.");
+      return;
+    }
+    removeImageByUrl(product.image_url, currentUserId);
+    setConfirmingRemove(false);
+    toast.success(`"${product.product_name}" was removed from the marketplace.`);
+    onProductUpdated();
+  }
+
+  return (
+    <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        background: "var(--fc-bg-gray0)", borderRadius: "16px",
+        border: `1px solid ${product.sold_out ? "var(--fc-line-red200)" : "var(--fc-line-gray101)"}`,
+        overflow: "hidden",
+        boxShadow: hovered
+          ? "0 16px 40px rgba(0,0,0,0.1)"
+          : "0 2px 10px rgba(0,0,0,0.04)",
+        transition: "all 0.25s ease",
+        transform: hovered ? "translateY(-4px)" : "translateY(0)",
+        opacity: product.sold_out ? 0.85 : 1
+      }}
+    >
+      {/* IMAGE */}
+      <div style={{ position: "relative", paddingTop: "75%", background: "var(--fc-bg-gray50)" }}>
+        {product.image_url ? (
+          <img
+            src={product.image_url}
+            alt={product.product_name}
+            style={{
+              position: "absolute", inset: 0,
+              width: "100%", height: "100%", objectFit: "cover",
+              transition: "transform 0.4s ease",
+              transform: hovered ? "scale(1.05)" : "scale(1)"
+            }}
+          />
+        ) : (
+          <div style={{
+            position: "absolute", inset: 0,
+            display: "flex", alignItems: "center", justifyContent: "center"
+          }}>
+            <ShoppingBag size={40} color="var(--fc-fg-gray200)" />
+          </div>
+        )}
+
+        {/* CATEGORY BADGE */}
+        <div style={{
+          position: "absolute", top: "12px", left: "12px",
+          background: "var(--fc-surface)", borderRadius: "16px",
+          padding: "4px 10px", fontSize: "12px", fontWeight: "600",
+          color: "var(--fc-fg-gray700)",
+        }}>
+          {categoryLabel}
+        </div>
+
+        {/* SOLD OUT OVERLAY */}
+        {product.sold_out && (
+          <div style={{
+            position: "absolute", inset: 0,
+            background: "rgba(0,0,0,0.45)",
+            display: "flex", alignItems: "center", justifyContent: "center"
+          }}>
+            <span style={{
+              background: "var(--fc-bg-gray0)", color: "var(--fc-fg-red700)", fontWeight: "700",
+              fontSize: "13px", padding: "6px 14px", borderRadius: "999px"
+            }}>
+              Out of stock
+            </span>
+          </div>
+        )}
+
+        {/* VERIFIED BADGE */}
+        {product.is_verified && (
+          <div style={{
+            position: "absolute", top: "12px", right: "12px",
+            display: "flex", alignItems: "center", gap: "4px",
+            background: "var(--fc-surface)", borderRadius: "16px",
+            padding: "4px 10px", fontSize: "12px",
+            fontWeight: "600", color: "var(--fc-fg-green800)"
+          }}>
+            <Check size={14} aria-hidden="true" /> Verified
+          </div>
+        )}
+
+        {/* SELLER DOT */}
+        {isSeller && !product.is_verified && (
+          <div style={{
+            position: "absolute", top: "14px", right: "14px",
+            width: "10px", height: "10px", borderRadius: "50%",
+            background: "#15803d",
+            boxShadow: "0 0 0 3px rgba(34,197,94,0.3)"
+          }} />
+        )}
+      </div>
+
+      {/* CONTENT */}
+      <div style={{ padding: "16px" }}>
+        <h3 style={{
+          margin: "0 0 8px", fontSize: "15px", fontWeight: "700",
+          color: "var(--fc-fg-gray900)", whiteSpace: "nowrap",
+          overflow: "hidden", textOverflow: "ellipsis"
+        }}>
+          {product.product_name}
+        </h3>
+
+        <div style={{ marginBottom: "6px", fontSize: "18px", fontWeight: "700", color: "var(--fc-fg-gray900)", lineHeight: 1.25, overflowWrap: "anywhere" }}>
+          {priceText(product)}
+          <span style={{ fontSize: "12px", fontWeight: "400", color: "var(--fc-fg-gray400)" }}>
+            {unitSuffix(product.unit)}
+          </span>
+        </div>
+
+        {!product.sold_out && (
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px", marginBottom: "6px" }}>
+            <span style={{
+              fontSize: "12px", fontWeight: "700", padding: "3px 10px", borderRadius: "16px",
+              ...(product.availability === "on_order"
+                ? { background: "var(--fc-bg-blue50)", color: "var(--fc-fg-blue700)" }
+                : { background: "var(--fc-bg-green50)", color: "var(--fc-fg-green700)" })
+            }}>
+              {(AVAILABILITY[product.availability] || AVAILABILITY.in_stock).label}
+              {product.availability !== "on_order" && product.stock > 0 ? ` · ${product.stock}` : ""}
+            </span>
+            {minOrderText(product) && (
+              <span style={{ fontSize: "12px", color: "var(--fc-fg-gray500)" }}>{minOrderText(product)}</span>
+            )}
+          </div>
+        )}
+
+        {product.county && (
+          <div style={{
+            display: "flex", alignItems: "flex-start", gap: "4px",
+            fontSize: "12px", color: "var(--fc-fg-gray500)", marginBottom: "4px"
+          }}>
+            <MapPin size={12} style={{ flex: "none", marginTop: "2px" }} aria-hidden="true" />
+            {[product.location_details, product.county].filter(Boolean).join(", ")}
+          </div>
+        )}
+
+        {freshness(product).label && (
+          <div style={{
+            fontSize: "12px", marginBottom: "4px",
+            color: freshness(product).stale ? "var(--fc-fg-amber700)" : "var(--fc-fg-gray400)",
+            fontWeight: freshness(product).stale ? 700 : 400
+          }}>
+            {freshness(product).label}
+            {freshness(product).stale && !product.sold_out ? ". Confirm it's still available." : ""}
+          </div>
+        )}
+
+        <p style={{ fontSize: "12px", color: "var(--fc-fg-gray400)", margin: "0 0 14px" }}>
+          by {product.supplier_name || "Farmer"}
+        </p>
+
+{product.supplier?.verification_status === "verified" && (
+  <p style={{ display: "flex", alignItems: "center", gap: "6px", margin: "-8px 0 12px", fontSize: "12px", fontWeight: "700", color: "var(--fc-fg-green700)" }}>
+    <BadgeCheck size={14} aria-hidden="true" /> Verified supplier
+  </p>
+)}
+
+{/* ORDER BUTTON — only supplier listings can be ordered in-app */}
+{IN_APP_ORDERING && !isSeller && product.supplier_id && !product.sold_out && (
+  <button
+    onClick={() => onAddToCart(product)}
+    style={{
+      width: "100%", padding: "12px", marginBottom: "8px",
+      minHeight: "44px",
+      background: "#15803d",
+      color: "var(--fc-fg-gray0)", border: "none", borderRadius: "12px",
+      fontWeight: "700", fontSize: "13px", cursor: "pointer"
+    }}
+  >
+    <ShoppingCart size={14} aria-hidden="true" /> Add to order
+  </button>
+)}
+
+{/* BUYER CONTACT — the MVP flow: call or WhatsApp the seller and agree
+    price and delivery directly */}
+{!isSeller && (product.sold_out ? (
+  <div style={{
+    minHeight: "44px", display: "flex", alignItems: "center", justifyContent: "center",
+    background: "var(--fc-bg-gray100)", color: "var(--fc-fg-gray500)", border: "1.5px solid var(--fc-line-gray200)",
+    borderRadius: "12px", fontWeight: "700", fontSize: "13px"
+  }}>
+    Out of stock
+  </div>
+) : telHref(product.seller_phone) ? (
+  <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
+    <a
+      href={telHref(product.seller_phone)}
+      onClick={() => recordContact({ productId: product.id, channel: "call" })}
+      aria-label={`Call the seller of ${product.product_name}`}
+      style={contactButton(false)}
+    >
+      <Phone size={16} aria-hidden="true" /> Call
+    </a>
+    <button
+      onClick={() => onContactSeller(product)}
+      aria-label={`WhatsApp the seller of ${product.product_name}`}
+      style={contactButton(true)}
+    >
+      <MessageCircle size={16} aria-hidden="true" /> WhatsApp
+    </button>
+  </div>
+) : (
+  <button onClick={() => onContactSeller(product)} style={{ ...contactButton(false), width: "100%" }}>
+    <MessageCircle size={16} aria-hidden="true" /> Contact seller
+  </button>
+))}
+        {!isSeller && (
+          <button type="button" className="ac-link-btn" onClick={() => onReport(product)} aria-label={`Report the listing ${product.product_name}`}>
+            <Flag size={14} aria-hidden="true" /> Report this listing
+          </button>
+        )}
+
+        {/* SELLER CONTROLS */}
+        {isSeller && (
+          <div>
+            <button
+              onClick={() => setShowSellerPanel(!showSellerPanel)}
+              aria-expanded={showSellerPanel}
+              className="fc-btn fc-btn--secondary"
+              style={{ width: "100%" }}
+            >
+              <ChevronDown size={16} aria-hidden="true" style={{ transform: showSellerPanel ? "rotate(180deg)" : "none" }} /> Seller controls
+            </button>
+
+            {showSellerPanel && (
+              <div style={{
+                marginTop: "12px", background: "var(--fc-bg-gray50)",
+                border: "1px solid var(--fc-line-gray200)",
+                borderRadius: "12px", padding: "14px"
+              }}>
+                {/* UPDATE STOCK */}
+                <div style={{ marginBottom: "12px" }}>
+                  <label style={{
+                    fontSize: "11px", fontWeight: "600",
+                    color: "var(--fc-fg-gray500)", textTransform: "uppercase",
+                    letterSpacing: "0.05em", display: "block",
+                    marginBottom: "6px"
+                  }}>
+                    Update Stock
+                  </label>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <input
+                      type="number"
+                      value={newStock}
+                      onChange={e => setNewStock(e.target.value)}
+                      style={{
+                        flex: 1, padding: "8px 10px",
+                        borderRadius: "8px",
+                        border: "1.5px solid var(--fc-line-gray200)",
+                        fontSize: "14px", outline: "none"
+                      }}
+                    />
+                    <button
+                      onClick={handleUpdateStock}
+                      disabled={updating}
+                      style={{
+                        padding: "8px 14px", background: "var(--fc-bg-gray0)",
+                        border: "1.5px solid var(--fc-line-gray200)",
+                        borderRadius: "8px", cursor: "pointer",
+                        fontWeight: "600", fontSize: "13px", color: "var(--fc-fg-gray700)"
+                      }}
+                    >
+                      <Pencil size={14} aria-hidden="true" /> Save
+                    </button>
+                  </div>
+                </div>
+
+                <div style={{
+                  height: "1px", background: "var(--fc-bg-gray200)", marginBottom: "12px"
+                }} />
+
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={handleSoldOut}
+                    disabled={updating || product.sold_out}
+                    style={{
+                      flex: 1, padding: "8px", background: "var(--fc-bg-gray0)",
+                      border: "1.5px solid var(--fc-line-amber500)", borderRadius: "8px",
+                      cursor: "pointer", fontWeight: "600",
+                      fontSize: "12px", color: "var(--fc-fg-amber600)",
+                      display: "flex", alignItems: "center",
+                      justifyContent: "center", gap: "6px"
+                    }}
+                  >
+                    <Package size={14} aria-hidden="true" /> {product.sold_out ? "Out of stock" : "Mark out of stock"}
+                  </button>
+                  <button
+                    onClick={() => { setRemoveError(""); setConfirmingRemove(true); }}
+                    disabled={updating}
+                    style={{
+                      flex: 1, padding: "8px", background: "var(--fc-bg-gray0)",
+                      border: "1.5px solid var(--fc-line-red500)", borderRadius: "8px",
+                      cursor: "pointer", fontWeight: "600",
+                      fontSize: "12px", color: "var(--fc-fg-red500)",
+                      display: "flex", alignItems: "center",
+                      justifyContent: "center", gap: "6px"
+                    }}
+                  >
+                    <Trash2 size={14} aria-hidden="true" /> Remove
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {confirmingRemove && (
+        <ConfirmDialog
+          title={`Remove "${product.product_name}"?`}
+          confirmLabel="Remove listing"
+          busyLabel="Removing..."
+          cancelLabel="Keep listing"
+          danger
+          icon={Trash2}
+          busy={updating}
+          error={removeError}
+          onCancel={() => setConfirmingRemove(false)}
+          onConfirm={confirmRemove}
+        >
+          <p>This takes the listing and its photo off the marketplace for good. Buyers will no longer see it.</p>
+          <p>If you have only run out for now, use "Mark out of stock" instead.</p>
+        </ConfirmDialog>
+      )}
+    </div>
+  );
+}

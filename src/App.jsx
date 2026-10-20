@@ -1,0 +1,417 @@
+import { Routes, Route, Navigate, useNavigate } from "react-router-dom";
+import { AuthProvider, useAuth } from "./context/AuthContext";
+import { ToastProvider } from "./context/ToastContext";
+import { ThemeProvider } from "./context/ThemeContext";
+import { Suspense, lazy, useEffect } from 'react';
+import { readSignInProblem } from "./lib/signInReturn";
+import { supabase } from "./lib/supabaseClient";
+import { POLICIES_PUBLISHED } from "./config/features";
+
+// PAGES — lazy-loaded so each route ships its own chunk instead of one
+// multi-megabyte bundle for the whole app.
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Bookings = lazy(() => import("./pages/Bookings"));
+const VetDashboard = lazy(() => import("./pages/VetDashboard"));
+const VetProfileSetup = lazy(() => import("./pages/VetProfileSetup"));
+const Login = lazy(() => import("./pages/Login"));
+const Signup = lazy(() => import("./pages/Signup"));
+const Suppliers = lazy(() => import("./pages/Suppliers"));
+const Marketplace = lazy(() => import("./pages/Marketplace"));
+const Orders = lazy(() => import("./pages/Orders"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard"));
+const SupplierOrders = lazy(() => import("./pages/SupplierOrders"));
+const SupplierDashboard = lazy(() => import("./pages/SupplierDashboard"));
+const SupplierProfileSetup = lazy(() => import("./pages/SupplierProfileSetup"));
+const SupplierProducts = lazy(() => import("./pages/SupplierProducts"));
+const SupplierProductForm = lazy(() => import("./pages/SupplierProductForm"));
+const CluckyAI = lazy(() => import("./pages/CluckyAI"));
+const MyFarm = lazy(() => import("./pages/MyFarm"));
+const Profile = lazy(() => import("./pages/Profile"));
+const FarmGallery = lazy(() => import("./pages/FarmGallery"));
+const VerificationRequests = lazy(() => import("./pages/VerificationRequests"));
+const Community = lazy(() => import("./pages/Community"));
+const Finance = lazy(() => import("./pages/Finance"));
+const Tasks = lazy(() => import("./pages/Tasks"));
+const FeedCalculator = lazy(() => import("./pages/FeedCalculator"));
+const MyFarmers = lazy(() => import("./pages/MyFarmers"));
+const Appointments = lazy(() => import("./pages/Appointments"));
+const LandingPage = lazy(() => import("./pages/LandingPage"));
+const PrivacyPolicy = lazy(() => import("./pages/legal/PrivacyPolicy"));
+const Terms = lazy(() => import("./pages/legal/Terms"));
+const DeleteAccountPage = lazy(() => import("./pages/legal/DeleteAccountPage"));
+const AccountDeleted = lazy(() => import("./pages/legal/AccountDeleted"));
+const ForgotPassword = lazy(() => import("./pages/ForgotPassword"));
+const ResetPassword = lazy(() => import("./pages/ResetPassword"));
+
+// COMPONENTS
+import ProtectedRoute from "./components/ProtectedRoute";
+import Layout from "./components/Layout";
+
+function LoadingScreen({ label }) {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        flexDirection: "column",
+        background: "var(--fc-bg-green50)",
+        gap: "12px"
+      }}
+    >
+      <div
+        style={{
+          width: "40px",
+          height: "40px",
+          border: "4px solid var(--fc-line-green100)",
+          borderTop: "4px solid var(--fc-line-green700)",
+          borderRadius: "50%",
+          animation: "spin 1s linear infinite"
+        }}
+      />
+
+      <p
+        style={{
+          color: "var(--fc-fg-gray550)",
+          fontSize: "14px"
+        }}
+      >
+        {label}
+      </p>
+
+      <style>
+        {`
+          @keyframes spin {
+            to {
+              transform: rotate(360deg);
+            }
+          }
+        `}
+      </style>
+    </div>
+  );
+}
+
+function AppRoutes() {
+  const { user, role, loading } = useAuth();
+  const navigate = useNavigate();
+
+  // =========================
+  // BACK FROM GOOGLE, REFUSED
+  // Supabase puts the reason in the address and signs nobody in. Say so
+  // on the login page, where the person can try again, and tidy the
+  // address. Waits for `loading` so Supabase has read the address first.
+  // =========================
+  useEffect(() => {
+    if (loading) return;
+    const problem = readSignInProblem(window.location.href);
+    if (!problem) return;
+    if (user) navigate(window.location.pathname, { replace: true });
+    else navigate("/login", { replace: true, state: { signInProblem: problem } });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading]);
+
+  // =========================
+  // BACK FROM A PASSWORD-RESET EMAIL
+  // The link signs the person in for one purpose. Wherever Supabase sent
+  // them (it falls back to its Site URL if the address is not on its
+  // list), take them to the page where a new password is chosen.
+  // =========================
+  useEffect(() => {
+    const { data: listener } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "PASSWORD_RECOVERY") navigate("/reset-password", { replace: true });
+    });
+    return () => listener.subscription.unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // =========================
+  // LOADING SCREEN
+  // =========================
+  if (loading) {
+    return <LoadingScreen label="Loading Kiliforma..." />;
+  }
+
+  return (
+    <>
+      {/* TOP NOTIFICATION BAR */}
+
+
+      {/* ROUTES */}
+      <Suspense fallback={<LoadingScreen label="Loading..." />}>
+      <Routes>
+
+        {/* =========================
+            PUBLIC ROUTES
+        ========================= */}
+        <Route path="/login" element={<Login />} />
+
+        <Route path="/signup" element={<Signup />} />
+
+        {/* Policies. Open to everyone, signed in or not, and they read
+            nothing from the database: these are the addresses given to
+            the Play Store. */}
+        {POLICIES_PUBLISHED && <Route path="/privacy" element={<PrivacyPolicy />} />}
+        {POLICIES_PUBLISHED && <Route path="/terms" element={<Terms />} />}
+        <Route path="/delete-account" element={<DeleteAccountPage />} />
+        <Route path="/account-deleted" element={<AccountDeleted />} />
+
+        {/* Recovering an account: ask for a link, then choose a new password. */}
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+
+
+        {/* Old standalone verification forms wrote to tables that never
+            existed. Vets and suppliers now get verified through their
+            profile pages (admin approves), so these URLs just point there. */}
+        <Route
+          path="/vet-verification"
+          element={<Navigate to={!user ? "/signup" : role === "vet" ? "/vet-profile" : "/"} replace />}
+        />
+
+        <Route
+          path="/supplier-verification"
+          element={<Navigate to={!user ? "/signup" : role === "supplier" ? "/supplier-profile" : "/"} replace />}
+        />
+
+        {/* =========================
+            ROOT
+            Logged out: public landing page (no redirect to /login).
+            Logged in: same Dashboard-behind-Layout as before, same URL.
+        ========================= */}
+        <Route
+          path="/"
+          element={user ? <Layout /> : <LandingPage />}
+        >
+          {/* Only farmers live at "/". Everyone else is sent to their own
+              home, which matters after Google sign-in: Google always
+              returns people to "/" whatever their role. */}
+          {user && (
+            <Route
+              index
+              element={
+                role === "supplier" ? <Navigate to="/supplier" replace /> :
+                role === "vet" ? <Navigate to="/vet" replace /> :
+                role === "admin" ? <Navigate to="/admin" replace /> :
+                <Dashboard />
+              }
+            />
+          )}
+        </Route>
+
+        {/* =========================
+            PROTECTED ROUTES
+        ========================= */}
+
+        <Route
+          element={
+            user
+              ? <Layout />
+              : <Navigate to="/login" replace />
+          }
+        >
+
+          {/* FARM */}
+          <Route path="/my-farm" element={<MyFarm />} />
+
+          <Route path="/tasks" element={<Tasks />} />
+
+          <Route path="/finance" element={<Finance />} />
+
+          {/* Retired: its totals came from unused tables (bookings, the old
+              suppliers table). The admin dashboard covers this. */}
+          <Route path="/analytics" element={<Navigate to={role === "admin" ? "/admin" : "/"} replace />} />
+
+          {/* PROFILE */}
+          <Route path="/profile" element={<Profile />} />
+
+          <Route path="/gallery" element={<FarmGallery />} />
+
+          {/* MARKETPLACE */}
+          <Route path="/marketplace" element={<Marketplace />} />
+
+          <Route path="/orders" element={<Orders />} />
+
+          <Route path="/suppliers" element={<Suppliers />} />
+
+          {/* Retired: there is no in-app payment system yet (contact-first
+              MVP) and nothing ever created wallet rows, so the page sat on
+              "Loading..." forever. The wallets table is kept for when
+              payments are built. Old links go to the user's own home. */}
+          <Route
+            path="/wallet"
+            element={<Navigate to={role === "supplier" ? "/supplier" : role === "vet" ? "/vet" : role === "admin" ? "/admin" : "/"} replace />}
+          />
+
+          <Route path="/feed-calculator" element={<FeedCalculator />} />
+
+          {/* COMMUNITY */}
+          <Route path="/community" element={<Community />} />
+
+          {/* The separate "Messages" chat and the posts feed were merged
+              into one group at /community; the old address still works. */}
+          <Route path="/community-chat" element={<Navigate to="/community" replace />} />
+
+          {/* BOOKINGS */}
+          <Route path="/bookings" element={<Bookings />} />
+
+          {/* AI */}
+          <Route path="/clucky" element={<CluckyAI />} />
+
+          {/* Retired anonymous chat room (no owner on messages, so nothing could
+              be moderated or attributed). Community chat replaced it. */}
+          <Route path="/chat" element={<Navigate to="/community" replace />} />
+
+          {/* VERIFICATIONS */}
+          <Route
+            path="/verifications"
+            element={
+              <ProtectedRoute allowedRoles={["admin"]}>
+                <VerificationRequests />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* =========================
+              VET ROUTES
+          ========================= */}
+
+          <Route
+            path="/vet"
+            element={
+              <ProtectedRoute allowedRoles={["vet"]}>
+                <VetDashboard />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/vet-profile"
+            element={
+              <ProtectedRoute allowedRoles={["vet"]}>
+                <VetProfileSetup />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/vet/farmers"
+            element={
+              <ProtectedRoute allowedRoles={["vet"]}>
+                <MyFarmers />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/appointments"
+            element={
+              <ProtectedRoute allowedRoles={["vet"]}>
+                <Appointments />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* =========================
+              SUPPLIER ROUTES
+          ========================= */}
+
+          <Route
+            path="/supplier"
+            element={
+              <ProtectedRoute allowedRoles={["supplier"]}>
+                <SupplierDashboard />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/supplier/products"
+            element={
+              <ProtectedRoute allowedRoles={["supplier"]}>
+                <SupplierProducts />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/supplier/products/new"
+            element={
+              <ProtectedRoute allowedRoles={["supplier"]}>
+                <SupplierProductForm />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/supplier/products/:id/edit"
+            element={
+              <ProtectedRoute allowedRoles={["supplier"]}>
+                <SupplierProductForm />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/supplier-profile"
+            element={
+              <ProtectedRoute allowedRoles={["supplier"]}>
+                <SupplierProfileSetup />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/supplier-orders"
+            element={
+              <ProtectedRoute allowedRoles={["supplier"]}>
+                <SupplierOrders />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* =========================
+              ADMIN ROUTES
+          ========================= */}
+
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute allowedRoles={["admin"]}>
+                <AdminDashboard />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Retired for now: the app takes no commission and in-app ordering
+              is switched off, so there is no revenue to report. Planned to
+              return with payments in version 2.1 (the old page is in git
+              history as src/pages/RevenueDashboard.jsx). */}
+          <Route path="/revenue" element={<Navigate to={role === "admin" ? "/admin" : "/"} replace />} />
+
+        </Route>
+
+        {/* FALLBACK */}
+        <Route
+          path="*"
+          element={<Navigate to="/" replace />}
+        />
+
+      </Routes>
+      </Suspense>
+    </>
+  );
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <ThemeProvider>
+        <ToastProvider>
+          <AppRoutes />
+        </ToastProvider>
+      </ThemeProvider>
+    </AuthProvider>
+  );
+}
